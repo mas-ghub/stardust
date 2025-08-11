@@ -100,7 +100,7 @@ export class GameScene {
   update(dt) {
     window.__engineCamera = this.camera;
     // Player input and update
-    this.player.update(dt, this.input, this.enemies);
+    this.player.update(dt, this.input, this.enemies, this.camera);
 
     // Projectiles
     this.projectiles.update(dt, this.enemies, (hitPos) => {

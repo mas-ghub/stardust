@@ -7,7 +7,9 @@ export class Player {
     scene.add(this.object);
 
     this.speed = 10.5;
-    this.friction = 8;
+    this.accelRate = 24; // units per second^2 equivalent
+    this.drag = 6; // damping when no input
+    this.maxTurnRate = Math.PI * 3.5; // radians per second
     this.velocity = new THREE.Vector3();
     this.fireCooldown = 0;
     this.fireRate = 0.12; // seconds between shots
@@ -18,11 +20,16 @@ export class Player {
     this.audio = audio;
   }
 
-  update(dt, input, enemies) {
-    // Movement
+  update(dt, input, enemies, camera) {
+    // Movement with acceleration and drag for steadier feel
     const axis = input.getAxis();
-    const desired = new THREE.Vector3(axis.x, 0, -axis.y).multiplyScalar(this.speed);
-    this.velocity.lerp(desired, 1 - Math.pow(0.0001, dt * this.friction));
+    const desiredVelocity = new THREE.Vector3(axis.x, 0, -axis.y).multiplyScalar(this.speed);
+    const velocityDelta = desiredVelocity.clone().sub(this.velocity);
+    const accelFactor = Math.min(1, this.accelRate * dt);
+    this.velocity.addScaledVector(velocityDelta, accelFactor);
+    if (desiredVelocity.lengthSq() < 0.0001) {
+      this.velocity.multiplyScalar(Math.max(0, 1 - this.drag * dt));
+    }
 
     this.object.position.addScaledVector(this.velocity, dt);
     // Confine to arena
@@ -30,19 +37,33 @@ export class Player {
     const pos = this.object.position;
     if (pos.length() > r) pos.setLength(r);
 
-    // Aim toward mouse projected onto XZ plane
+    // Aim toward mouse projected onto XZ plane with stable yaw-limited rotation
     const mouseNdc = input.mouse; // -1..1
-    const camera = window.__engineCamera || null; // will be set by scene before update
     if (camera) {
       const ray = new THREE.Ray();
-      const dir = new THREE.Vector3(mouseNdc.x, mouseNdc.y, 1).unproject(camera).sub(camera.position).normalize();
+      const dir = new THREE.Vector3(mouseNdc.x, mouseNdc.y, 1)
+        .unproject(camera)
+        .sub(camera.position)
+        .normalize();
       ray.origin.copy(camera.position);
       ray.direction.copy(dir);
-      const t = -ray.origin.y / ray.direction.y; // intersect y=0 plane
-      const hit = ray.origin.clone().addScaledVector(ray.direction, t);
-      const forward = hit.sub(this.object.position).setY(0);
-      if (forward.lengthSq() > 0.0001) {
-        this.object.quaternion.slerp(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), forward.clone().normalize()), 1 - Math.pow(0.0001, dt * 20));
+      const denom = ray.direction.y;
+      if (Math.abs(denom) > 1e-5) {
+        const t = -ray.origin.y / denom; // intersect y=0 plane
+        if (isFinite(t) && t > 0) {
+          const hit = ray.origin.clone().addScaledVector(ray.direction, t);
+          const forward = hit.sub(this.object.position).setY(0);
+          if (forward.lengthSq() > 1e-5) {
+            const targetYaw = Math.atan2(forward.x, forward.z);
+            const currentYaw = this.object.rotation.y;
+            let diff = targetYaw - currentYaw;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            const maxStep = this.maxTurnRate * dt;
+            const step = Math.max(-maxStep, Math.min(maxStep, diff));
+            this.object.rotation.y = currentYaw + step;
+          }
+        }
       }
     }
 
