@@ -11,37 +11,40 @@ export class GameScene {
     this.audio = audio;
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, 200);
-    this.camera.position.set(0, 14, 16);
-    this.camera.lookAt(0, 0, 0);
+    this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, 300);
+    this.camera.position.set(0, 12, 28);
+    this.camera.lookAt(0, this.planetRadius || 12, 0);
 
     // Lights
-    const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x0b1224, 0.7);
+    const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x0b1224, 0.8);
     this.scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xffffff, 1.1);
-    dir.position.set(5, 10, 7);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(12, 18, 20);
     dir.castShadow = false;
     this.scene.add(dir);
 
-    // Arena floor
-    const floorGeo = new THREE.CylinderGeometry(14, 14, 0.3, 64);
-    const floorMat = new THREE.MeshStandardMaterial({ color: 0x0b1d3a, metalness: 0.1, roughness: 0.8, emissive: 0x06122b, emissiveIntensity: 0.25 });
-    const floor = new THREE.Mesh(floorGeo, floorMat);
-    floor.receiveShadow = true;
-    floor.position.y = -0.15;
-    this.scene.add(floor);
+    // World and planet
+    this.world = new THREE.Group();
+    this.scene.add(this.world);
+    this.planetRadius = 12;
+    const planetGeo = new THREE.SphereGeometry(this.planetRadius, 64, 64);
+    const planetMat = new THREE.MeshStandardMaterial({ color: 0x0b1d3a, metalness: 0.15, roughness: 0.85, emissive: 0x06122b, emissiveIntensity: 0.35 });
+    this.planet = new THREE.Mesh(planetGeo, planetMat);
+    this.planet.receiveShadow = true;
+    this.world.add(this.planet);
 
     // Star dome
-    const stars = makeStars(1200, 60);
+    const stars = makeStars(1200, 80);
     this.scene.add(stars);
 
     // Systems
     this.input = new InputManager(this.engine?.canvas || document.getElementById('game-canvas'));
-    this.projectiles = new ProjectilePool(this.scene, this.audio);
-    this.particles = new ParticleSystem(this.scene);
+    this.projectiles = new ProjectilePool(this.world, this.audio);
+    this.particles = new ParticleSystem(this.world);
 
     // Entities
     this.player = new Player(this.scene, this.projectiles, this.audio);
+    this.player.object.position.set(0, this.planetRadius + 0.5, 0);
     this.enemies = [];
     this.pickups = [];
 
@@ -98,9 +101,21 @@ export class GameScene {
   }
 
   update(dt) {
-    window.__engineCamera = this.camera;
-    // Player input and update
+    // Fixed-screen player: rotate world around origin based on player yaw and thrust
+    // Player update handles yaw and thrust inputs, and exposes its yaw and thrust state
     this.player.update(dt, this.input, this.enemies, this.camera);
+
+    // Rotate world to simulate travel over the planet when thrusting
+    const thrustVel = this.player.getThrustVelocityOnSphere?.(this.planetRadius) || new THREE.Vector3();
+    if (thrustVel.lengthSq() > 0) {
+      // Move enemies/pickups/projectiles by rotating the world around axis perpendicular to forward
+      const angular = thrustVel.length() / this.planetRadius; // radians/sec
+      // Axis is perpendicular to forward and radial up (Y+ in local at player point). Here approximated around XZ plane.
+      const forward = this.player.getForwardXZ();
+      const up = new THREE.Vector3(0, 1, 0);
+      const axis = new THREE.Vector3().crossVectors(forward, up).normalize();
+      this.world.rotateOnAxis(axis, -angular * dt);
+    }
 
     // Projectiles
     this.projectiles.update(dt, this.enemies, (hitPos) => {
@@ -159,11 +174,9 @@ export class GameScene {
       if (this.lives < 5) this._setLives(this.lives + 1);
     }
 
-    // Camera subtle follow
-    const target = this.player.object.position;
-    const camTarget = new THREE.Vector3(target.x * 0.12, 14, target.z * 0.12 + 16);
-    this.camera.position.lerp(camTarget, 1 - Math.pow(0.0001, dt));
-    this.camera.lookAt(target.x * 0.2, 0, target.z * 0.2);
+    // Static main camera framing the center; slight parallax on world rotation is enough
+    this.camera.position.lerp(new THREE.Vector3(0, 12, 28), 1 - Math.pow(0.0001, dt));
+    this.camera.lookAt(0, this.planetRadius, 0);
 
     // Particles
     this.particles.update(dt);

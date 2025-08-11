@@ -15,8 +15,10 @@ export class ProjectilePool {
   fire(origin, direction) {
     const mesh = this._getMesh();
     mesh.position.copy(origin).addScaledVector(direction, 0.8);
-    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), direction.clone().normalize());
-    mesh.userData = { vel: direction.clone().multiplyScalar(22), ttl: 1.6 };
+    // orient along direction in XZ plane
+    const yaw = Math.atan2(direction.x, direction.z);
+    mesh.rotation.set(0, yaw, 0);
+    mesh.userData = { vel: direction.clone().setY(0).normalize().multiplyScalar(22), ttl: 1.6 };
     this.scene.add(mesh);
     this.active.push(mesh);
   }

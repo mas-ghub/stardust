@@ -3,14 +3,19 @@ import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 export class Player {
   constructor(scene, projectilePool, audio) {
     this.object = makeShipMesh();
-    this.object.position.set(0, 0, 8);
+    this.object.position.set(0, 0, 0);
     scene.add(this.object);
 
-    this.speed = 10.5;
-    this.accelRate = 24; // units per second^2 equivalent
-    this.drag = 6; // damping when no input
+    // Fixed-center control parameters
     this.maxTurnRate = Math.PI * 3.5; // radians per second
-    this.velocity = new THREE.Vector3();
+    this.turnSpeed = Math.PI * 2.8; // input turn speed
+    this.thrustAccel = 12; // units per second^2 along tangent
+    this.thrustDrag = 2.5; // deceleration when not thrusting
+    this.maxThrust = 10; // max linear speed on sphere
+
+    this.yaw = 0;
+    this.thrustSpeed = 0;
+
     this.fireCooldown = 0;
     this.fireRate = 0.12; // seconds between shots
     this.power = 0; // increases spread and fire rate
@@ -21,62 +26,34 @@ export class Player {
   }
 
   update(dt, input, enemies, camera) {
-    // Movement with acceleration and drag for steadier feel
+    // Fixed-center controls: left/right rotate yaw, up arrow thrust forward
     const axis = input.getAxis();
-    const desiredVelocity = new THREE.Vector3(axis.x, 0, -axis.y).multiplyScalar(this.speed);
-    const velocityDelta = desiredVelocity.clone().sub(this.velocity);
-    const accelFactor = Math.min(1, this.accelRate * dt);
-    this.velocity.addScaledVector(velocityDelta, accelFactor);
-    if (desiredVelocity.lengthSq() < 0.0001) {
-      this.velocity.multiplyScalar(Math.max(0, 1 - this.drag * dt));
-    }
+    // yaw
+    const turn = (axis.x) * this.turnSpeed * dt; // ArrowLeft/Right or A/D
+    this.yaw += turn;
+    // clamp yaw to [-pi, pi] for stability
+    if (this.yaw > Math.PI) this.yaw -= Math.PI * 2; else if (this.yaw < -Math.PI) this.yaw += Math.PI * 2;
+    this.object.rotation.set(0, this.yaw, 0);
 
-    this.object.position.addScaledVector(this.velocity, dt);
-    // Confine to arena
-    const r = 13;
-    const pos = this.object.position;
-    if (pos.length() > r) pos.setLength(r);
-
-    // Aim toward mouse projected onto XZ plane with stable yaw-limited rotation
-    const mouseNdc = input.mouse; // -1..1
-    if (camera) {
-      const ray = new THREE.Ray();
-      const dir = new THREE.Vector3(mouseNdc.x, mouseNdc.y, 1)
-        .unproject(camera)
-        .sub(camera.position)
-        .normalize();
-      ray.origin.copy(camera.position);
-      ray.direction.copy(dir);
-      const denom = ray.direction.y;
-      if (Math.abs(denom) > 1e-5) {
-        const t = -ray.origin.y / denom; // intersect y=0 plane
-        if (isFinite(t) && t > 0) {
-          const hit = ray.origin.clone().addScaledVector(ray.direction, t);
-          const forward = hit.sub(this.object.position).setY(0);
-          if (forward.lengthSq() > 1e-5) {
-            const targetYaw = Math.atan2(forward.x, forward.z);
-            const currentYaw = this.object.rotation.y;
-            let diff = targetYaw - currentYaw;
-            while (diff > Math.PI) diff -= Math.PI * 2;
-            while (diff < -Math.PI) diff += Math.PI * 2;
-            const maxStep = this.maxTurnRate * dt;
-            const step = Math.max(-maxStep, Math.min(maxStep, diff));
-            this.object.rotation.y = currentYaw + step;
-          }
-        }
-      }
+    // thrust
+    const isThrusting = (input.keysDown.has('ArrowUp') || input.keysDown.has('KeyW'));
+    if (isThrusting) {
+      this.thrustSpeed = Math.min(this.maxThrust, this.thrustSpeed + this.thrustAccel * dt);
+    } else {
+      this.thrustSpeed = Math.max(0, this.thrustSpeed - this.thrustDrag * dt);
     }
 
     // Fire
     this.fireCooldown -= dt;
     if (input.mouse.isDown && this.fireCooldown <= 0) {
+      const forward = this.getForwardXZ();
       const spread = this.power >= 2 ? 3 : (this.power >= 1 ? 2 : 1);
-      const baseDir = new THREE.Vector3(0, 0, 1).applyQuaternion(this.object.quaternion).normalize();
       const dirs = [];
-      if (spread === 1) dirs.push(baseDir);
-      if (spread === 2) dirs.push(baseDir.clone().applyAxisAngle(new THREE.Vector3(0,1,0), 0.06), baseDir.clone().applyAxisAngle(new THREE.Vector3(0,1,0), -0.06));
-      if (spread === 3) dirs.push(baseDir, baseDir.clone().applyAxisAngle(new THREE.Vector3(0,1,0), 0.1), baseDir.clone().applyAxisAngle(new THREE.Vector3(0,1,0), -0.1));
-      for (const d of dirs) this.projectilePool.fire(this.object.position, d);
+      if (spread === 1) dirs.push(forward);
+      if (spread === 2) dirs.push(forward.clone().applyAxisAngle(new THREE.Vector3(0,1,0), 0.06), forward.clone().applyAxisAngle(new THREE.Vector3(0,1,0), -0.06));
+      if (spread === 3) dirs.push(forward, forward.clone().applyAxisAngle(new THREE.Vector3(0,1,0), 0.1), forward.clone().applyAxisAngle(new THREE.Vector3(0,1,0), -0.1));
+      const muzzle = new THREE.Vector3(0, 0, 0.8).applyEuler(new THREE.Euler(0, this.yaw, 0)).add(this.object.position);
+      for (const d of dirs) this.projectilePool.fire(muzzle, d);
       this.audio.playLaser();
       this.fireCooldown = Math.max(0.05, this.fireRate - this.power * 0.02);
     }
@@ -96,6 +73,16 @@ export class Player {
 
   empower() {
     this.power = Math.min(3, this.power + 1);
+  }
+
+  getForwardXZ() {
+    return new THREE.Vector3(0, 0, 1).applyEuler(new THREE.Euler(0, this.yaw, 0)).normalize();
+  }
+
+  getThrustVelocityOnSphere(radius) {
+    // Tangential velocity vector on sphere at the player location
+    const forward = this.getForwardXZ();
+    return forward.clone().multiplyScalar(this.thrustSpeed);
   }
 }
 
